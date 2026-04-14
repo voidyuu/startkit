@@ -1,3 +1,4 @@
 .vscode/*
 .DS_Store
 weights_challenge_1.pt
+__pycache__/
