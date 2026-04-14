@@ -18,7 +18,8 @@ class TrainConfig:
 @dataclass(frozen=True)
 class Challenge1Config:
     data_dir: Path = Path("/mnt/E/zhuyu_data/eeg-challenges")
-    train_releases: tuple[int, ...] = (1, 2, 3, 4, 6, 7, 8, 9, 10, 11)
+    artifacts_dir: Path = Path("artifacts/challenge1")
+    train_releases: tuple[int, ...] = (1,)
     valid_release: int = 5
     use_mini: bool = True
     sfreq: int = 100

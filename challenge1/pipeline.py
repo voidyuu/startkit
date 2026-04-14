@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import torch
 
 from .config import Challenge1Config
@@ -34,6 +36,7 @@ def print_device_banner(device: str) -> None:
 def run_training(config: Challenge1Config | None = None, *, device: str | None = None) -> None:
     config = config or Challenge1Config()
     config.data_dir.mkdir(parents=True, exist_ok=True)
+    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
     device = device or get_default_device()
     print_device_banner(device)
 
@@ -88,7 +91,7 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
         sfreq=config.sfreq,
     ).to(device)
     print(pretrain_model)
-    pretrain_model, best_pretrain_acc = fit_model(
+    pretrain_model, best_pretrain_acc, pretrain_summary = fit_model(
         pretrain_model,
         pretrain_train_loader,
         pretrain_valid_loader,
@@ -127,7 +130,7 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
         num_workers=config.finetune.num_workers,
     )
 
-    model, best_val_rmse = fit_model(
+    model, best_val_rmse, finetune_summary = fit_model(
         model,
         train_loader,
         valid_loader,
@@ -149,3 +152,26 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
 
     torch.save(model.state_dict(), "weights_challenge_1.pt")
     print("Model saved as 'weights_challenge_1.pt'")
+
+    metrics = {
+        "device": device,
+        "train_releases": list(config.train_releases),
+        "valid_release": config.valid_release,
+        "use_mini": config.use_mini,
+        "dataset_sizes": {
+            "train": len(train_set),
+            "valid": len(valid_set),
+            "test": len(test_set),
+            "pretrain_train": len(pretrain_train_set),
+            "pretrain_valid": len(pretrain_valid_set),
+        },
+        "pretrain": pretrain_summary,
+        "finetune": finetune_summary,
+        "final_test": {
+            "loss": test_loss,
+            "rmse": test_rmse,
+        },
+    }
+    metrics_path = config.artifacts_dir / "metrics.json"
+    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    print(f"Metrics saved to '{metrics_path}'")

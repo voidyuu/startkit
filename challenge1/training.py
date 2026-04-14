@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import asdict
 from typing import Optional
 
 import torch
@@ -145,6 +146,7 @@ def fit_model(
     best_epoch = None
     best_metric = float("inf") if regression else float("-inf")
     epochs_no_improve = 0
+    history = []
 
     for epoch in range(1, config.n_epochs + 1):
         print(f"Epoch {epoch}/{config.n_epochs}: ", end="")
@@ -172,6 +174,15 @@ def fit_model(
             f"Val {metric_name}: {val_metric:.6f}, "
             f"Average Val Loss: {val_loss:.6f}"
         )
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "train_metric": train_metric,
+                "val_loss": val_loss,
+                "val_metric": val_metric,
+            }
+        )
 
         improved = (
             val_metric < best_metric - config.min_delta
@@ -195,4 +206,12 @@ def fit_model(
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    return model, best_metric
+    summary = {
+        "config": asdict(config),
+        "metric_name": metric_name,
+        "regression": regression,
+        "best_metric": best_metric,
+        "best_epoch": best_epoch,
+        "history": history,
+    }
+    return model, best_metric, summary
