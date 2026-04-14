@@ -52,6 +52,10 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
         valid_subjects,
         test_subjects,
     )
+    if valid_set is None or len(valid_set) == 0:
+        raise RuntimeError("Validation split is empty after subject partitioning.")
+    if test_set is None or len(test_set) == 0:
+        raise RuntimeError("Test split is empty after subject partitioning.")
     train_set = train_windows
 
     print("Number of examples in each split")
@@ -59,7 +63,10 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
     print(f"Valid:\t{len(valid_set)}")
     print(f"Test:\t{len(test_set)}")
 
-    pretrain_train_set, pretrain_valid_set = create_passive_pretraining_datasets(config)
+    pretrain_train_set, pretrain_valid_set = create_passive_pretraining_datasets(
+        config,
+        valid_subjects=valid_subjects,
+    )
     pretrain_train_loader = make_loader(
         pretrain_train_set,
         batch_size=config.pretrain.batch_size,

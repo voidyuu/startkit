@@ -179,7 +179,7 @@ def create_target_task_windows(config: Challenge1Config, releases: Iterable[int 
     return BaseConcatDataset(all_window_datasets)
 
 
-def create_passive_pretraining_datasets(config: Challenge1Config):
+def create_passive_pretraining_datasets(config: Challenge1Config, *, valid_subjects: set[str]):
     train_datasets = []
     valid_datasets = []
 
@@ -221,7 +221,14 @@ def create_passive_pretraining_datasets(config: Challenge1Config):
             drop_last_window=True,
             preload=True,
         )
-        task_valid_windows.extend(valid_windows.datasets)
+        _, subject_valid_windows, _ = split_window_dataset_by_subject(
+            valid_windows,
+            set(),
+            valid_subjects,
+            set(),
+        )
+        if subject_valid_windows is not None:
+            task_valid_windows.extend(subject_valid_windows.datasets)
 
         if task_train_windows:
             train_datasets.append(LabeledWindowDataset(BaseConcatDataset(task_train_windows), label))
@@ -232,6 +239,8 @@ def create_passive_pretraining_datasets(config: Challenge1Config):
     valid_dataset = MultiTaskConcatDataset(valid_datasets)
     if len(train_dataset) == 0:
         raise RuntimeError("Passive-task pretraining dataset is empty.")
+    if len(valid_dataset) == 0:
+        raise RuntimeError("Passive-task pretraining validation dataset is empty.")
     return train_dataset, valid_dataset
 
 
