@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import torch
+from matplotlib import pyplot as plt
 
 from .config import Challenge1Config
 from .data import (
@@ -33,6 +34,41 @@ def print_device_banner(device: str) -> None:
         )
 
 
+def save_training_curves(summary: dict, *, output_dir, prefix: str) -> None:
+    history = summary.get("history", [])
+    if not history:
+        return
+
+    epochs = [item["epoch"] for item in history]
+    train_losses = [item["train_loss"] for item in history]
+    val_losses = [item["val_loss"] for item in history]
+    train_metrics = [item["train_metric"] for item in history]
+    val_metrics = [item["val_metric"] for item in history]
+    metric_name = str(summary.get("metric_name", "metric")).lower()
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, train_losses, label="train_loss")
+    plt.plot(epochs, val_losses, label="val_loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(f"{prefix.capitalize()} Loss Curve")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{prefix}_loss_curve.png")
+    plt.close()
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, train_metrics, label=f"train_{metric_name}")
+    plt.plot(epochs, val_metrics, label=f"val_{metric_name}")
+    plt.xlabel("Epoch")
+    plt.ylabel(summary.get("metric_name", "Metric"))
+    plt.title(f"{prefix.capitalize()} {summary.get('metric_name', 'Metric')} Curve")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{prefix}_{metric_name}_curve.png")
+    plt.close()
+
+
 def run_training(config: Challenge1Config | None = None, *, device: str | None = None) -> None:
     config = config or Challenge1Config()
     config.data_dir.mkdir(parents=True, exist_ok=True)
@@ -43,7 +79,10 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
     train_windows = create_target_task_windows(config, config.train_releases)
     valid_release_windows = create_target_task_windows(config, [config.valid_release])
     valid_meta_information = valid_release_windows.get_metadata()
-    plot_target_distribution(valid_meta_information)
+    plot_target_distribution(
+        valid_meta_information,
+        output_path=config.artifacts_dir / "response_time_distribution.png",
+    )
 
     valid_subjects, test_subjects = split_eval_subjects(
         valid_meta_information,
@@ -176,3 +215,6 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
     metrics_path = config.artifacts_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     print(f"Metrics saved to '{metrics_path}'")
+    save_training_curves(pretrain_summary, output_dir=config.artifacts_dir, prefix="pretrain")
+    save_training_curves(finetune_summary, output_dir=config.artifacts_dir, prefix="finetune")
+    print(f"Training curves saved to '{config.artifacts_dir}'")
