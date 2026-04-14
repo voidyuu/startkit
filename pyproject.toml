@@ -12,12 +12,8 @@ dependencies = [
     "eegdash>=0.3.8",
     "braindecode==1.2.0",
     "lightning==2.5.5",
-    "torch==2.2.2+cpu",
-    "torchaudio==2.2.2+cpu",
+    "torch==2.7.0",
+    "torchaudio==2.7.0",
     "ipykernel",
     "jupyter",
 ]
-
-[tool.uv]
-managed = true
-extra-index-url = ["https://download.pytorch.org/whl/cpu"]
