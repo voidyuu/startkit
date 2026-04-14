@@ -2,66 +2,51 @@
 # <a target="_blank" href="https://colab.research.google.com/github/eeg2025/startkit/blob/main/challenge_1.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
 # %% [markdown]
-# # Challenge 1: Cross-Task Transfer Learning!
+# # Challenge 1: Cross-Task Transfer Learning
 #
-# ## How can we use the knowledge from one EEG Decoding task into another?
-#
-# Transfer learning is a widespread technique used in deep learning. It uses knowledge learned from one source task/domain in another target task/domain. It has been studied in depth in computer vision, natural language processing, and speech, but what about EEG brain decoding?
-#
-# The cross-task transfer learning scenario in EEG decoding is remarkably underexplored in comparison to the developers of new models, [Aristimunha et al., (2023)](https://arxiv.org/abs/2308.02408), even though it can be much more useful for real applications, see [Wimpff et al. (2025)](https://arxiv.org/abs/2502.06828), [Wu et al. (2025)](https://arxiv.org/abs/2507.09882).
-#
-# Our Challenge 1 addresses a key goal in neurotechnology: decoding cognitive function from EEG using the pre-trained knowledge from another. In other words, developing models that can effectively transfer/adapt/adjust/fine-tune knowledge from passive EEG tasks to active tasks.
-#
-# The ability to generalize and transfer is something critical that we believe should be focused. To go beyond just comparing metrics numbers that are often not comparable, given the specificities of EEG, such as pre-processing, inter-subject variability, and many other unique components of this type of data.
-#
-# This means your submitted model might be trained on a subset of tasks and fine-tuned on data from another condition, evaluating its capacity to generalize with task-specific fine-tuning.
-
-# %% [markdown]
-# __________
-#
-# Note: For simplicity purposes, we will only show how to do the decoding directly in our target task, and it is up to the teams to think about how to use the passive task to perform the pre-training.
-
-# %% [markdown]
-# ---
-# ## Summary table for this start kit
-#
-# In this tutorial, we are going to show in more detail what we want from Challenge 1:
-#
-# **Contents**:
-#
-# 0. Understand the Contrast Change Detection - CCD task.
-# 1. Understand the [`EEGChallengeDataset`](https://eeglab.org/EEGDash/api/eegdash.html#eegdash.EEGChallengeDataset) object.
-# 2. Preparing the dataloaders.
-# 3. Building the deep learning model with [`braindecode`](https://braindecode.org/stable/models/models_table.html).
-# 4. Designing the training loop.
-# 5. Training the model.
-# 6. Evaluating test performance.
-# 7. Going further, *benchmark go brrr!*
-
-# %% Install dependencies on colab [code] tags=["hide-input"]
-# !pip install braindecode
-# !pip install eegdash
+# This script implements a competition-aligned baseline:
+# 1. pre-train an EEGNeX encoder on passive HBN tasks with task classification;
+# 2. fine-tune the encoder on the Challenge 1 target task
+#    (contrast change detection response-time regression).
 
 # %% Imports and setup [code]
+from __future__ import annotations
+
+import copy
+from bisect import bisect_right
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, Optional
+
 import torch
 from braindecode.datasets import BaseConcatDataset
-from braindecode.preprocessing import preprocess, Preprocessor, create_windows_from_events
 from braindecode.models import EEGNeX
-from torch.utils.data import DataLoader
+from braindecode.preprocessing import (
+    Preprocessor,
+    create_fixed_length_windows,
+    create_windows_from_events,
+    preprocess,
+)
+from eegdash.dataset import EEGChallengeDataset
+from eegdash.hbn.windows import (
+    add_aux_anchors,
+    add_extras_columns,
+    annotate_trials_with_target,
+    keep_only_recordings_with,
+)
+from matplotlib.pylab import plt
 from sklearn.model_selection import train_test_split
 from sklearn.utils import check_random_state
-from typing import Optional
+from torch import nn
 from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 from tqdm import tqdm
-import copy
-from joblib import Parallel, delayed
 
-# Identify whether a CUDA-enabled GPU is available
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 if device == "cuda":
-    msg = 'CUDA-enabled GPU found. Training should be faster.'
+    msg = "CUDA-enabled GPU found. Training should be faster."
 else:
     msg = (
         "No GPU found. Training will be carried out on CPU, which might be "
@@ -71,172 +56,369 @@ else:
     )
 print(msg)
 
-# %% [markdown]
-# ## 1. What are we decoding?
-#
-# The Contrast Change Detection (CCD) task relates to [Steady-State Visual Evoked Potentials (SSVEP)](https://en.wikipedia.org/wiki/Steady-state_visually_evoked_potential) and [Event-Related Potentials (ERP)](https://en.wikipedia.org/wiki/Event-related_potential).
-#
-# Algorithmically, what the subject sees during recording is:
-#
-# * Two flickering striped discs: one tilted left, one tilted right.
-# * After a variable delay, **one disc's contrast gradually increases** **while the other decreases**.
-# * They **press left or right** to indicate which disc got stronger.
-# * They receive **feedback** (🙂 correct / 🙁 incorrect).
-#
-# **The task parallels SSVEP and ERP:**
-#
-# * The continuous flicker **tags the EEG at fixed frequencies (and harmonics)** → SSVEP-like signals.
-# * The **ramp onset**, the **button press**, and the **feedback** are **time-locked events** that yield ERP-like components.
-#
-# Your task (**label**) is to predict the response time for the subject during this windows.
 
-# %% Load the data [code]
-from pathlib import Path
-from eegdash.dataset import EEGChallengeDataset
-from eegdash.hbn.windows import (
-    annotate_trials_with_target,
-    add_aux_anchors,
-    add_extras_columns,
-    keep_only_recordings_with,
-)
+# %% Configuration [code]
 DATA_DIR = Path("/mnt/E/zhuyu_data/eeg-challenges")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-dataset_ccd = EEGChallengeDataset(
-    task="contrastChangeDetection",
-    release="R5",
-    cache_dir=DATA_DIR,
-    mini=True
-)
-
-# For visualization purposes, we will see just one object.
-raw = dataset_ccd.datasets[0].raw  # get the Raw object of the first recording
-
-# To download all data directly, you can do:
-# raws = Parallel(n_jobs=-1)(
-#     delayed(lambda d: d.raw)(d) for d in dataset_ccd.datasets
-# )
-
-# %% Create windows of interest [code]
+TRAIN_RELEASES = [1]
+VALID_RELEASE = 5
+USE_MINI = True
+SFREQ = 100
 EPOCH_LEN_S = 2.0
-SFREQ = 100  # by definition here
+WINDOW_SIZE_SAMPLES = int(EPOCH_LEN_S * SFREQ)
+WINDOW_STRIDE_SAMPLES = SFREQ
+RANDOM_SEED = 2025
 
-transformation_offline = [
-    Preprocessor(
-        annotate_trials_with_target,
-        target_field="rt_from_stimulus", epoch_length=EPOCH_LEN_S,
-        require_stimulus=True, require_response=True,
-        apply_on_array=False,
-    ),
-    Preprocessor(add_aux_anchors, apply_on_array=False),
+PASSIVE_TASKS = [
+    "RestingState",
+    "surroundSupp",
+    "DiaryOfAWimpyKid",
+    "DespicableMe",
+    "FunwithFractals",
+    "ThePresent",
 ]
-preprocess(dataset_ccd, transformation_offline, n_jobs=1)
+TARGET_TASK = "contrastChangeDetection"
 
-ANCHOR = "stimulus_anchor"
-SHIFT_AFTER_STIM = 0.5
-WINDOW_LEN = 2.0
 
-# Keep only recordings that actually contain stimulus anchors
-dataset = keep_only_recordings_with(ANCHOR, dataset_ccd)
+@dataclass(frozen=True)
+class TrainConfig:
+    batch_size: int
+    num_workers: int
+    lr: float
+    weight_decay: float
+    n_epochs: int
+    patience: int
+    min_delta: float
 
-# Create single-interval windows (stim-locked, long enough to include the response)
-single_windows = create_windows_from_events(
-    dataset,
-    mapping={ANCHOR: 0},
-    trial_start_offset_samples=int(SHIFT_AFTER_STIM * SFREQ),                 # +0.5 s
-    trial_stop_offset_samples=int((SHIFT_AFTER_STIM + WINDOW_LEN) * SFREQ),   # +2.5 s
-    window_size_samples=int(EPOCH_LEN_S * SFREQ),
-    window_stride_samples=SFREQ,
-    preload=True,
+
+PRETRAIN_CONFIG = TrainConfig(
+    batch_size=128,
+    num_workers=0,
+    lr=1e-3,
+    weight_decay=1e-5,
+    n_epochs=12,
+    patience=3,
+    min_delta=1e-4,
 )
 
-# Injecting metadata into the extra mne annotation.
-single_windows = add_extras_columns(
-    single_windows,
-    dataset,
-    desc=ANCHOR,
-    keys=("target", "rt_from_stimulus", "rt_from_trialstart",
-          "stimulus_onset", "response_onset", "correct", "response_type")
+FINETUNE_CONFIG = TrainConfig(
+    batch_size=128,
+    num_workers=0,
+    lr=1e-3,
+    weight_decay=1e-5,
+    n_epochs=100,
+    patience=5,
+    min_delta=1e-4,
 )
 
-# %% Split the data [code]
-# Extract meta information
-meta_information = single_windows.get_metadata()
 
-# Inspect meta information
-from matplotlib.pylab import plt
-fig, ax = plt.subplots(figsize=(15, 5))
-ax = meta_information["target"].plot.hist(bins=30, ax=ax, color='lightblue')
-ax.set_xlabel("Response Time (s)")
-ax.set_ylabel("Frequency")
-ax.set_title("Distribution of Response Times")
-plt.savefig("response_time_distribution.png")
+class LabeledWindowDataset(Dataset):
+    """Wrap a braindecode window dataset and replace its target by a fixed label."""
 
-valid_frac = 0.1
-test_frac = 0.1
-seed = 2025
+    def __init__(self, base_dataset: Dataset, label: int):
+        self.base_dataset = base_dataset
+        self.label = label
 
-subjects = meta_information["subject"].unique()
-sub_rm = ["NDARWV769JM7", "NDARME789TD2", "NDARUA442ZVF", "NDARJP304NK1",
-          "NDARTY128YLU", "NDARDW550GU6", "NDARLD243KRE", "NDARUJ292JXV", "NDARBA381JGH"]
-subjects = [s for s in subjects if s not in sub_rm]
+    def __len__(self) -> int:
+        return len(self.base_dataset)
 
-train_subj, valid_test_subject = train_test_split(
-    subjects, test_size=(valid_frac + test_frac), random_state=check_random_state(seed), shuffle=True
-)
+    def __getitem__(self, index: int):
+        X = self.base_dataset[index][0]
+        return X, torch.tensor(self.label, dtype=torch.long)
 
-valid_subj, test_subj = train_test_split(
-    valid_test_subject, test_size=test_frac, random_state=check_random_state(seed + 1), shuffle=True
-)
 
-# Sanity check
-assert (set(valid_subj) | set(test_subj) | set(train_subj)) == set(subjects)
+class MultiTaskConcatDataset(Dataset):
+    """Concat datasets while exposing only (X, y) tuples to the loader."""
 
-# Create train/valid/test splits for the windows
-subject_split = single_windows.split("subject")
-train_set = []
-valid_set = []
-test_set = []
+    def __init__(self, datasets: Iterable[Dataset]):
+        self.datasets = [d for d in datasets if len(d) > 0]
+        self.cumulative_sizes = []
+        running = 0
+        for dataset in self.datasets:
+            running += len(dataset)
+            self.cumulative_sizes.append(running)
 
-for s in subject_split:
-    if s in train_subj:
-        train_set.append(subject_split[s])
-    elif s in valid_subj:
-        valid_set.append(subject_split[s])
-    elif s in test_subj:
-        test_set.append(subject_split[s])
+    def __len__(self) -> int:
+        return self.cumulative_sizes[-1] if self.cumulative_sizes else 0
 
-train_set = BaseConcatDataset(train_set)
-valid_set = BaseConcatDataset(valid_set)
-test_set = BaseConcatDataset(test_set)
+    def __getitem__(self, index: int):
+        dataset_idx = bisect_right(self.cumulative_sizes, index)
+        prev_size = 0 if dataset_idx == 0 else self.cumulative_sizes[dataset_idx - 1]
+        sample_idx = index - prev_size
+        return self.datasets[dataset_idx][sample_idx]
 
-print("Number of examples in each split in the minirelease")
-print(f"Train:\t{len(train_set)}")
-print(f"Valid:\t{len(valid_set)}")
-print(f"Test:\t{len(test_set)}")
 
-# %% Create dataloaders [code]
-batch_size = 128
-num_workers = 0 # avoid multiprocessing issues on macOS, but you can set it to >0 on Linux, or wrapped this code into function.
+class EEGNeXBackbone(nn.Module):
+    def __init__(self, n_chans: int, n_times: int, sfreq: int):
+        super().__init__()
+        self.backbone = EEGNeX(
+            n_chans=n_chans,
+            n_outputs=1,
+            n_times=n_times,
+            sfreq=sfreq,
+        )
+        feature_dim = self.backbone.final_layer.in_features
+        self.backbone.final_layer = nn.Identity()
+        self.feature_dim = feature_dim
 
-train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-valid_loader = DataLoader(valid_set, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.backbone(x)
 
-# %% Build the model [code]
-# For any braindecode model, you can initialize only inputing the signal related parameters
-# You can use any Pytorch module that you want here.
-model = EEGNeX(
-    n_chans=129,      # 129 channels
-    n_outputs=1,      # 1 output for regression
-    n_times=200,      # 2 seconds
-    sfreq=100,        # sample frequency 100 Hz
-)
 
-print(model)
-model.to(device)
+class EEGNeXTransferModel(nn.Module):
+    def __init__(self, n_outputs: int, n_chans: int = 129, n_times: int = 200, sfreq: int = 100):
+        super().__init__()
+        self.encoder = EEGNeXBackbone(n_chans=n_chans, n_times=n_times, sfreq=sfreq)
+        self.head = nn.Linear(self.encoder.feature_dim, n_outputs)
 
-# %% Define training functions [code]
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.encoder(x)
+        return self.head(features)
+
+
+def make_loader(dataset: Dataset, *, batch_size: int, shuffle: bool, num_workers: int) -> DataLoader:
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+    )
+
+
+def build_regression_model_from_pretrained(pretrained_model: EEGNeXTransferModel) -> EEGNeX:
+    model = EEGNeX(
+        n_chans=129,
+        n_outputs=1,
+        n_times=WINDOW_SIZE_SAMPLES,
+        sfreq=SFREQ,
+    )
+    model.block_1.load_state_dict(pretrained_model.encoder.backbone.block_1.state_dict())
+    model.block_2.load_state_dict(pretrained_model.encoder.backbone.block_2.state_dict())
+    model.block_3.load_state_dict(pretrained_model.encoder.backbone.block_3.state_dict())
+    model.block_4.load_state_dict(pretrained_model.encoder.backbone.block_4.state_dict())
+    model.block_5.load_state_dict(pretrained_model.encoder.backbone.block_5.state_dict())
+    return model
+
+
+def release_name(release: int | str) -> str:
+    release_str = str(release)
+    return release_str if release_str.startswith("R") else f"R{release_str}"
+
+
+def split_subjects(meta_information, valid_frac: float = 0.1, test_frac: float = 0.1):
+    subjects = meta_information["subject"].unique()
+    sub_rm = [
+        "NDARWV769JM7",
+        "NDARME789TD2",
+        "NDARUA442ZVF",
+        "NDARJP304NK1",
+        "NDARTY128YLU",
+        "NDARDW550GU6",
+        "NDARLD243KRE",
+        "NDARUJ292JXV",
+        "NDARBA381JGH",
+    ]
+    subjects = [s for s in subjects if s not in sub_rm]
+
+    train_subj, valid_test_subject = train_test_split(
+        subjects,
+        test_size=(valid_frac + test_frac),
+        random_state=check_random_state(RANDOM_SEED),
+        shuffle=True,
+    )
+    valid_subj, test_subj = train_test_split(
+        valid_test_subject,
+        test_size=test_frac,
+        random_state=check_random_state(RANDOM_SEED + 1),
+        shuffle=True,
+    )
+    assert (set(valid_subj) | set(test_subj) | set(train_subj)) == set(subjects)
+    return set(train_subj), set(valid_subj), set(test_subj)
+
+
+def split_eval_subjects(meta_information, valid_frac: float = 0.5):
+    subjects = meta_information["subject"].unique()
+    sub_rm = [
+        "NDARWV769JM7",
+        "NDARME789TD2",
+        "NDARUA442ZVF",
+        "NDARJP304NK1",
+        "NDARTY128YLU",
+        "NDARDW550GU6",
+        "NDARLD243KRE",
+        "NDARUJ292JXV",
+        "NDARBA381JGH",
+    ]
+    subjects = [s for s in subjects if s not in sub_rm]
+
+    valid_subj, test_subj = train_test_split(
+        subjects,
+        test_size=(1 - valid_frac),
+        random_state=check_random_state(RANDOM_SEED + 2),
+        shuffle=True,
+    )
+    assert set(valid_subj) | set(test_subj) == set(subjects)
+    return set(valid_subj), set(test_subj)
+
+
+def split_window_dataset_by_subject(windows, train_subjects, valid_subjects, test_subjects):
+    subject_split = windows.split("subject")
+    train_set, valid_set, test_set = [], [], []
+
+    for subject in subject_split:
+        if subject in train_subjects:
+            train_set.append(subject_split[subject])
+        elif subject in valid_subjects:
+            valid_set.append(subject_split[subject])
+        elif subject in test_subjects:
+            test_set.append(subject_split[subject])
+
+    def _concat_or_none(datasets):
+        return BaseConcatDataset(datasets) if datasets else None
+
+    return (
+        _concat_or_none(train_set),
+        _concat_or_none(valid_set),
+        _concat_or_none(test_set),
+    )
+
+
+def create_target_task_windows(releases: Iterable[int | str]):
+    all_window_datasets = []
+
+    for release in releases:
+        release_tag = release_name(release)
+        dataset_ccd = EEGChallengeDataset(
+            task=TARGET_TASK,
+            release=release_tag,
+            cache_dir=DATA_DIR,
+            mini=USE_MINI,
+        )
+
+        raw = dataset_ccd.datasets[0].raw
+        print(f"Loaded raw example for {TARGET_TASK} from {release_tag}: {raw}")
+
+        transformation_offline = [
+            Preprocessor(
+                annotate_trials_with_target,
+                target_field="rt_from_stimulus",
+                epoch_length=EPOCH_LEN_S,
+                require_stimulus=True,
+                require_response=True,
+                apply_on_array=False,
+            ),
+            Preprocessor(add_aux_anchors, apply_on_array=False),
+        ]
+        preprocess(dataset_ccd, transformation_offline, n_jobs=1)
+
+        anchor = "stimulus_anchor"
+        shift_after_stim = 0.5
+        window_len = 2.0
+
+        dataset = keep_only_recordings_with(anchor, dataset_ccd)
+        single_windows = create_windows_from_events(
+            dataset,
+            mapping={anchor: 0},
+            trial_start_offset_samples=int(shift_after_stim * SFREQ),
+            trial_stop_offset_samples=int((shift_after_stim + window_len) * SFREQ),
+            window_size_samples=WINDOW_SIZE_SAMPLES,
+            window_stride_samples=WINDOW_STRIDE_SAMPLES,
+            preload=True,
+        )
+
+        single_windows = add_extras_columns(
+            single_windows,
+            dataset,
+            desc=anchor,
+            keys=(
+                "target",
+                "rt_from_stimulus",
+                "rt_from_trialstart",
+                "stimulus_onset",
+                "response_onset",
+                "correct",
+                "response_type",
+            ),
+        )
+        all_window_datasets.extend(single_windows.datasets)
+
+    return BaseConcatDataset(all_window_datasets)
+
+
+def plot_target_distribution(meta_information):
+    fig, ax = plt.subplots(figsize=(15, 5))
+    ax = meta_information["target"].plot.hist(bins=30, ax=ax, color="lightblue")
+    ax.set_xlabel("Response Time (s)")
+    ax.set_ylabel("Frequency")
+    ax.set_title("Distribution of Response Times")
+    plt.savefig("response_time_distribution.png")
+    plt.close(fig)
+
+
+def create_passive_pretraining_datasets(train_releases, valid_release):
+    train_datasets = []
+    valid_datasets = []
+
+    for label, task_name in enumerate(PASSIVE_TASKS):
+        print(f"Preparing passive-task pretraining windows for {task_name}...")
+        task_train_windows = []
+        task_valid_windows = []
+
+        for release in train_releases:
+            passive_dataset = EEGChallengeDataset(
+                task=task_name,
+                release=release_name(release),
+                cache_dir=DATA_DIR,
+                mini=USE_MINI,
+            )
+            passive_windows = create_fixed_length_windows(
+                passive_dataset,
+                start_offset_samples=0,
+                stop_offset_samples=None,
+                window_size_samples=WINDOW_SIZE_SAMPLES,
+                window_stride_samples=WINDOW_STRIDE_SAMPLES,
+                drop_last_window=True,
+                preload=True,
+            )
+            task_train_windows.extend(passive_windows.datasets)
+
+        passive_valid_dataset = EEGChallengeDataset(
+            task=task_name,
+            release=release_name(valid_release),
+            cache_dir=DATA_DIR,
+            mini=USE_MINI,
+        )
+        passive_valid_windows = create_fixed_length_windows(
+            passive_valid_dataset,
+            start_offset_samples=0,
+            stop_offset_samples=None,
+            window_size_samples=WINDOW_SIZE_SAMPLES,
+            window_stride_samples=WINDOW_STRIDE_SAMPLES,
+            drop_last_window=True,
+            preload=True,
+        )
+        task_valid_windows.extend(passive_valid_windows.datasets)
+
+        if task_train_windows:
+            train_datasets.append(
+                LabeledWindowDataset(BaseConcatDataset(task_train_windows), label=label)
+            )
+        if task_valid_windows:
+            valid_datasets.append(
+                LabeledWindowDataset(BaseConcatDataset(task_valid_windows), label=label)
+            )
+
+    train_dataset = MultiTaskConcatDataset(train_datasets)
+    valid_dataset = MultiTaskConcatDataset(valid_datasets)
+
+    if len(train_dataset) == 0:
+        raise RuntimeError("Passive-task pretraining dataset is empty.")
+
+    print(f"Passive pretraining windows: train={len(train_dataset)}, valid={len(valid_dataset)}")
+    return train_dataset, valid_dataset
+
+
 def train_one_epoch(
     dataloader: DataLoader,
     model: Module,
@@ -244,145 +426,300 @@ def train_one_epoch(
     optimizer,
     scheduler: Optional[LRScheduler],
     epoch: int,
-    device,
+    device: str,
+    regression: bool,
     print_batch_stats: bool = True,
 ):
     model.train()
-
     total_loss = 0.0
+    total_correct = 0
+    total_examples = 0
     sum_sq_err = 0.0
-    n_samples = 0
 
     progress_bar = tqdm(
         enumerate(dataloader), total=len(dataloader), disable=not print_batch_stats
     )
 
     for batch_idx, batch in progress_bar:
-        # Support datasets that may return (X, y) or (X, y, ...)
         X, y = batch[0], batch[1]
-        X, y = X.to(device).float(), y.to(device).float()
+        X = X.to(device).float()
+        y = y.to(device)
+
+        if regression:
+            y = y.float().view(-1, 1)
 
         optimizer.zero_grad(set_to_none=True)
         preds = model(X)
         loss = loss_fn(preds, y)
         loss.backward()
         optimizer.step()
-
         total_loss += loss.item()
 
-        # Flatten to 1D for regression metrics and accumulate squared error
-        preds_flat = preds.detach().view(-1)
-        y_flat = y.detach().view(-1)
-        sum_sq_err += torch.sum((preds_flat - y_flat) ** 2).item()
-        n_samples += y_flat.numel()
+        if regression:
+            preds_flat = preds.detach().view(-1)
+            y_flat = y.detach().view(-1)
+            sum_sq_err += torch.sum((preds_flat - y_flat) ** 2).item()
+            total_examples += y_flat.numel()
+            metric = (sum_sq_err / max(total_examples, 1)) ** 0.5
+            metric_name = "RMSE"
+        else:
+            pred_labels = preds.detach().argmax(dim=1)
+            total_correct += (pred_labels == y).sum().item()
+            total_examples += y.numel()
+            metric = total_correct / max(total_examples, 1)
+            metric_name = "Acc"
 
         if print_batch_stats:
-            running_rmse = (sum_sq_err / max(n_samples, 1)) ** 0.5
             progress_bar.set_description(
                 f"Epoch {epoch}, Batch {batch_idx + 1}/{len(dataloader)}, "
-                f"Loss: {loss.item():.6f}, RMSE: {running_rmse:.6f}"
+                f"Loss: {loss.item():.6f}, {metric_name}: {metric:.6f}"
             )
 
     if scheduler is not None:
         scheduler.step()
 
     avg_loss = total_loss / len(dataloader)
-    rmse = (sum_sq_err / max(n_samples, 1)) ** 0.5
-    return avg_loss, rmse
+    return avg_loss, metric
+
 
 @torch.no_grad()
-def valid_model(
+def evaluate(
     dataloader: DataLoader,
     model: Module,
     loss_fn,
-    device,
+    device: str,
+    regression: bool,
     print_batch_stats: bool = True,
 ):
     model.eval()
-
     total_loss = 0.0
+    total_correct = 0
+    total_examples = 0
     sum_sq_err = 0.0
     n_batches = len(dataloader)
-    n_samples = 0
 
     iterator = tqdm(
         enumerate(dataloader),
         total=n_batches,
-        disable=not print_batch_stats
+        disable=not print_batch_stats,
     )
 
     for batch_idx, batch in iterator:
-        # Supports (X, y) or (X, y, ...)
         X, y = batch[0], batch[1]
-        X, y = X.to(device).float(), y.to(device).float()
+        X = X.to(device).float()
+        y = y.to(device)
+
+        if regression:
+            y = y.float().view(-1, 1)
 
         preds = model(X)
         batch_loss = loss_fn(preds, y).item()
         total_loss += batch_loss
 
-        preds_flat = preds.detach().view(-1)
-        y_flat = y.detach().view(-1)
-        sum_sq_err += torch.sum((preds_flat - y_flat) ** 2).item()
-        n_samples += y_flat.numel()
+        if regression:
+            preds_flat = preds.detach().view(-1)
+            y_flat = y.detach().view(-1)
+            sum_sq_err += torch.sum((preds_flat - y_flat) ** 2).item()
+            total_examples += y_flat.numel()
+            metric = (sum_sq_err / max(total_examples, 1)) ** 0.5
+            metric_name = "RMSE"
+        else:
+            pred_labels = preds.detach().argmax(dim=1)
+            total_correct += (pred_labels == y).sum().item()
+            total_examples += y.numel()
+            metric = total_correct / max(total_examples, 1)
+            metric_name = "Acc"
 
         if print_batch_stats:
-            running_rmse = (sum_sq_err / max(n_samples, 1)) ** 0.5
             iterator.set_description(
                 f"Val Batch {batch_idx + 1}/{n_batches}, "
-                f"Loss: {batch_loss:.6f}, RMSE: {running_rmse:.6f}"
+                f"Loss: {batch_loss:.6f}, {metric_name}: {metric:.6f}"
             )
 
     avg_loss = total_loss / n_batches if n_batches else float("nan")
-    rmse = (sum_sq_err / max(n_samples, 1)) ** 0.5
+    return avg_loss, metric
 
-    print(f"Val RMSE: {rmse:.6f}, Val Loss: {avg_loss:.6f}\n")
-    return avg_loss, rmse
 
-# %% Train the model [code]
-lr = 1E-3
-weight_decay = 1E-5
-n_epochs = 100
-early_stopping_patience = 50
-
-optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs - 1)
-loss_fn = torch.nn.MSELoss()
-
-patience = 5
-min_delta = 1e-4
-best_rmse = float("inf")
-epochs_no_improve = 0
-best_state, best_epoch = None, None
-
-for epoch in range(1, n_epochs + 1):
-    print(f"Epoch {epoch}/{n_epochs}: ", end="")
-
-    train_loss, train_rmse = train_one_epoch(
-        train_loader, model, loss_fn, optimizer, scheduler, epoch, device
+def fit_model(
+    model: Module,
+    train_loader: DataLoader,
+    valid_loader: DataLoader,
+    config: TrainConfig,
+    *,
+    regression: bool,
+    metric_name: str,
+):
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.lr,
+        weight_decay=config.weight_decay,
     )
-    val_loss, val_rmse = valid_model(test_loader, model, loss_fn, device)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(config.n_epochs - 1, 1),
+    )
+    loss_fn = torch.nn.MSELoss() if regression else torch.nn.CrossEntropyLoss()
 
-    print(
-        f"Train RMSE: {train_rmse:.6f}, "
-        f"Average Train Loss: {train_loss:.6f}, "
-        f"Val RMSE: {val_rmse:.6f}, "
-        f"Average Val Loss: {val_loss:.6f}"
+    best_state = None
+    best_epoch = None
+    best_metric = float("inf") if regression else float("-inf")
+    epochs_no_improve = 0
+
+    for epoch in range(1, config.n_epochs + 1):
+        print(f"Epoch {epoch}/{config.n_epochs}: ", end="")
+        train_loss, train_metric = train_one_epoch(
+            train_loader,
+            model,
+            loss_fn,
+            optimizer,
+            scheduler,
+            epoch,
+            device,
+            regression=regression,
+        )
+        val_loss, val_metric = evaluate(
+            valid_loader,
+            model,
+            loss_fn,
+            device,
+            regression=regression,
+        )
+
+        print(
+            f"Train {metric_name}: {train_metric:.6f}, "
+            f"Average Train Loss: {train_loss:.6f}, "
+            f"Val {metric_name}: {val_metric:.6f}, "
+            f"Average Val Loss: {val_loss:.6f}"
+        )
+
+        improved = (
+            val_metric < best_metric - config.min_delta
+            if regression
+            else val_metric > best_metric + config.min_delta
+        )
+
+        if improved:
+            best_metric = val_metric
+            best_state = copy.deepcopy(model.state_dict())
+            best_epoch = epoch
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= config.patience:
+                print(
+                    f"Early stopping at epoch {epoch}. "
+                    f"Best Val {metric_name}: {best_metric:.6f} (epoch {best_epoch})"
+                )
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    return model, best_metric
+
+
+def main():
+    train_windows = create_target_task_windows(TRAIN_RELEASES)
+    valid_release_windows = create_target_task_windows([VALID_RELEASE])
+    valid_meta_information = valid_release_windows.get_metadata()
+    plot_target_distribution(valid_meta_information)
+
+    valid_subjects, test_subjects = split_eval_subjects(valid_meta_information)
+    _, valid_set, test_set = split_window_dataset_by_subject(
+        valid_release_windows,
+        set(),
+        valid_subjects,
+        test_subjects,
+    )
+    train_set = train_windows
+
+    print("Number of examples in each split")
+    print(f"Train:\t{len(train_set)}")
+    print(f"Valid:\t{len(valid_set)}")
+    print(f"Test:\t{len(test_set)}")
+
+    pretrain_train_set, pretrain_valid_set = create_passive_pretraining_datasets(
+        train_releases=TRAIN_RELEASES,
+        valid_release=VALID_RELEASE,
     )
 
-    if val_rmse < best_rmse - min_delta:
-        best_rmse = val_rmse
-        best_state = copy.deepcopy(model.state_dict())
-        best_epoch = epoch
-        epochs_no_improve = 0
-    else:
-        epochs_no_improve += 1
-        if epochs_no_improve >= patience:
-            print(f"Early stopping at epoch {epoch}. Best Val RMSE: {best_rmse:.6f} (epoch {best_epoch})")
-            break
+    pretrain_train_loader = make_loader(
+        pretrain_train_set,
+        batch_size=PRETRAIN_CONFIG.batch_size,
+        shuffle=True,
+        num_workers=PRETRAIN_CONFIG.num_workers,
+    )
+    pretrain_valid_loader = make_loader(
+        pretrain_valid_set,
+        batch_size=PRETRAIN_CONFIG.batch_size,
+        shuffle=False,
+        num_workers=PRETRAIN_CONFIG.num_workers,
+    )
 
-if best_state is not None:
-    model.load_state_dict(best_state)
+    print("Starting passive-task pretraining...")
+    pretrain_model = EEGNeXTransferModel(
+        n_outputs=len(PASSIVE_TASKS),
+        n_chans=129,
+        n_times=WINDOW_SIZE_SAMPLES,
+        sfreq=SFREQ,
+    ).to(device)
+    print(pretrain_model)
 
-# %% Save the model [code]
-torch.save(model.state_dict(), "weights_challenge_1.pt")
-print("Model saved as 'weights_challenge_1.pt'")
+    pretrain_model, best_pretrain_acc = fit_model(
+        pretrain_model,
+        pretrain_train_loader,
+        pretrain_valid_loader,
+        PRETRAIN_CONFIG,
+        regression=False,
+        metric_name="Acc",
+    )
+    print(f"Best passive-task validation accuracy: {best_pretrain_acc:.6f}")
+
+    print("Starting Challenge 1 fine-tuning...")
+    model = build_regression_model_from_pretrained(pretrain_model).to(device)
+    print(model)
+
+    train_loader = make_loader(
+        train_set,
+        batch_size=FINETUNE_CONFIG.batch_size,
+        shuffle=True,
+        num_workers=FINETUNE_CONFIG.num_workers,
+    )
+    valid_loader = make_loader(
+        valid_set,
+        batch_size=FINETUNE_CONFIG.batch_size,
+        shuffle=False,
+        num_workers=FINETUNE_CONFIG.num_workers,
+    )
+    test_loader = make_loader(
+        test_set,
+        batch_size=FINETUNE_CONFIG.batch_size,
+        shuffle=False,
+        num_workers=FINETUNE_CONFIG.num_workers,
+    )
+
+    model, best_val_rmse = fit_model(
+        model,
+        train_loader,
+        valid_loader,
+        FINETUNE_CONFIG,
+        regression=True,
+        metric_name="RMSE",
+    )
+    print(f"Best validation RMSE after fine-tuning: {best_val_rmse:.6f}")
+
+    test_loss, test_rmse = evaluate(
+        test_loader,
+        model,
+        torch.nn.MSELoss(),
+        device,
+        regression=True,
+    )
+    print(f"Final Test RMSE: {test_rmse:.6f}, Test Loss: {test_loss:.6f}")
+
+    torch.save(model.state_dict(), "weights_challenge_1.pt")
+    print("Model saved as 'weights_challenge_1.pt'")
+
+
+if __name__ == "__main__":
+    main()
