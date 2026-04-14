@@ -150,8 +150,9 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
     )
     print(f"Final Test RMSE: {test_rmse:.6f}, Test Loss: {test_loss:.6f}")
 
-    torch.save(model.state_dict(), "weights_challenge_1.pt")
-    print("Model saved as 'weights_challenge_1.pt'")
+    artifacts_weights_path = config.artifacts_dir / "weights_challenge_1.pt"
+    torch.save(model.state_dict(), artifacts_weights_path)
+    print(f"Artifact weights saved to '{artifacts_weights_path}'")
 
     metrics = {
         "device": device,
