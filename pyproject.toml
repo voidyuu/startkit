@@ -1,0 +1,23 @@
+[project]
+name = "startkit"
+version = "0.1.0"
+description = "EEG Foundation challenge start kit"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "mne",
+    "eegdash>=0.3.8",
+    "braindecode==1.2.0",
+    "lightning==2.5.5",
+    "torch==2.2.2+cpu",
+    "torchaudio==2.2.2+cpu",
+    "ipykernel",
+    "jupyter",
+]
+
+[tool.uv]
+managed = true
+extra-index-url = ["https://download.pytorch.org/whl/cpu"]

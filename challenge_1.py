@@ -99,12 +99,12 @@ from eegdash.hbn.windows import (
     add_extras_columns,
     keep_only_recordings_with,
 )
-DATA_DIR = Path("data")
+DATA_DIR = Path("/mnt/E/zhuyu_data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 dataset_ccd = EEGChallengeDataset(
     task="contrastChangeDetection",
-    release="R5", 
+    release="R5",
     cache_dir=DATA_DIR,
     mini=True
 )
