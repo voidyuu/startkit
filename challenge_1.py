@@ -7,8 +7,12 @@
 # Thin training entrypoint. The actual implementation lives under `challenge1/`
 # so data, model, and training logic can evolve independently.
 
-from challenge1 import run_training
+from startkit_network import install_network_from_env
 
 
 if __name__ == "__main__":
+    install_network_from_env()
+
+    from challenge1 import run_training
+
     run_training()

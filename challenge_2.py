@@ -67,6 +67,10 @@ import os
 import random
 from joblib import Parallel, delayed
 
+from startkit_network import install_network_from_env
+
+install_network_from_env()
+
 import torch
 from torch.utils.data import DataLoader
 from torch import optim

@@ -67,6 +67,23 @@ Main dependencies:
 - `eegdash` - Dataset management and preprocessing
 - `pytorch` - Deep learning framework
 
+## Custom Network
+
+The project can resolve MongoDB Atlas records through a custom DoH endpoint and optionally tunnel all dataset traffic through a custom SOCKS5 proxy.
+
+```bash
+export STARTKIT_DOH_URL="https://223.5.5.5/resolve"
+export STARTKIT_SOCKS_PROXY="socks5://192.168.1.109:7221"
+./.venv/bin/python challenge_1.py
+```
+
+Optional environment variables:
+- `STARTKIT_DNS_HOSTS` - JSON object for static host overrides, for example `{"example.com":"93.184.216.34"}`
+- `STARTKIT_DNS_TIMEOUT` - DoH timeout in seconds, default `5`
+- `all_proxy` / `ALL_PROXY` - used as the SOCKS5 proxy if `STARTKIT_SOCKS_PROXY` is unset
+
+The network patch is process-local and initializes before `eegdash` imports in the provided entrypoints.
+
 ## 🤝 Community & Support
 
 This is a community competition with a strong open-source foundation. If you see something that doesn't work or could be improved:
