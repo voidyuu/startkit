@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -60,3 +61,7 @@ class Challenge1Config:
     @property
     def window_stride_samples(self) -> int:
         return self.sfreq
+
+    def make_run_dir(self, now: datetime | None = None) -> Path:
+        timestamp = (now or datetime.now()).strftime("%Y_%m_%d#%H-%M-%S")
+        return self.artifacts_dir / timestamp

@@ -72,16 +72,18 @@ def save_training_curves(summary: dict, *, output_dir, prefix: str) -> None:
 def run_training(config: Challenge1Config | None = None, *, device: str | None = None) -> None:
     config = config or Challenge1Config()
     config.data_dir.mkdir(parents=True, exist_ok=True)
-    config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = config.make_run_dir()
+    run_dir.mkdir(parents=True, exist_ok=False)
     device = device or get_default_device()
     print_device_banner(device)
+    print(f"Saving training artifacts to '{run_dir}'")
 
     train_windows = create_target_task_windows(config, config.train_releases)
     valid_release_windows = create_target_task_windows(config, [config.valid_release])
     valid_meta_information = valid_release_windows.get_metadata()
     plot_target_distribution(
         valid_meta_information,
-        output_path=config.artifacts_dir / "response_time_distribution.png",
+        output_path=run_dir / "response_time_distribution.png",
     )
 
     valid_subjects, test_subjects = split_eval_subjects(
@@ -189,12 +191,13 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
     )
     print(f"Final Test RMSE: {test_rmse:.6f}, Test Loss: {test_loss:.6f}")
 
-    artifacts_weights_path = config.artifacts_dir / "weights_challenge_1.pt"
+    artifacts_weights_path = run_dir / "weights_challenge_1.pt"
     torch.save(model.state_dict(), artifacts_weights_path)
     print(f"Artifact weights saved to '{artifacts_weights_path}'")
 
     metrics = {
         "device": device,
+        "run_dir": str(run_dir),
         "train_releases": list(config.train_releases),
         "valid_release": config.valid_release,
         "use_mini": config.use_mini,
@@ -212,9 +215,9 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
             "rmse": test_rmse,
         },
     }
-    metrics_path = config.artifacts_dir / "metrics.json"
+    metrics_path = run_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     print(f"Metrics saved to '{metrics_path}'")
-    save_training_curves(pretrain_summary, output_dir=config.artifacts_dir, prefix="pretrain")
-    save_training_curves(finetune_summary, output_dir=config.artifacts_dir, prefix="finetune")
-    print(f"Training curves saved to '{config.artifacts_dir}'")
+    save_training_curves(pretrain_summary, output_dir=run_dir, prefix="pretrain")
+    save_training_curves(finetune_summary, output_dir=run_dir, prefix="finetune")
+    print(f"Training curves saved to '{run_dir}'")
