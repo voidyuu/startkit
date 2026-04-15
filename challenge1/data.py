@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+import math
 from pathlib import Path
 from typing import Iterable
 
@@ -119,8 +120,85 @@ def split_eval_subjects(meta_information, *, random_seed: int, valid_frac: float
     return set(valid_subjects), set(test_subjects)
 
 
+def _filter_recordings(
+    dataset: BaseConcatDataset,
+    *,
+    expected_n_chans: int,
+    min_n_times: int,
+    context: str,
+) -> BaseConcatDataset:
+    filtered_datasets = []
+    dropped_bad_channels = 0
+    dropped_too_short = 0
+
+    for recording in dataset.datasets:
+        raw = recording.raw
+        if len(raw.ch_names) != expected_n_chans:
+            dropped_bad_channels += 1
+            continue
+        if raw.n_times < min_n_times:
+            dropped_too_short += 1
+            continue
+        filtered_datasets.append(recording)
+
+    if not filtered_datasets:
+        raise RuntimeError(
+            f"{context} dataset is empty after filtering invalid recordings "
+            f"(expected_n_chans={expected_n_chans}, min_n_times={min_n_times})."
+        )
+
+    if dropped_bad_channels or dropped_too_short:
+        print(
+            f"Filtered {context}: kept {len(filtered_datasets)} recordings, "
+            f"dropped {dropped_bad_channels} with unexpected channel count and "
+            f"{dropped_too_short} that were too short."
+        )
+
+    return BaseConcatDataset(filtered_datasets)
+
+
+def _is_finite_numeric(value) -> bool:
+    if value is None:
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _filter_windows_with_valid_target(
+    windows: BaseConcatDataset,
+    *,
+    target_name: str,
+    context: str,
+) -> BaseConcatDataset:
+    filtered_datasets = []
+    dropped_invalid_target = 0
+
+    for window_dataset in windows.datasets:
+        target_value = window_dataset.description.get(target_name)
+        if not _is_finite_numeric(target_value):
+            dropped_invalid_target += 1
+            continue
+        filtered_datasets.append(window_dataset)
+
+    if not filtered_datasets:
+        raise RuntimeError(
+            f"{context} dataset is empty after filtering windows with invalid '{target_name}'."
+        )
+
+    if dropped_invalid_target:
+        print(
+            f"Filtered {context}: kept {len(filtered_datasets)} windows, "
+            f"dropped {dropped_invalid_target} with missing or non-finite '{target_name}'."
+        )
+
+    return BaseConcatDataset(filtered_datasets)
+
+
 def create_target_task_windows(config: Challenge1Config, releases: Iterable[int | str]):
     all_window_datasets = []
+    min_target_recording_samples = int(2.5 * config.sfreq)
 
     for release in releases:
         release_tag = release_name(release)
@@ -129,6 +207,12 @@ def create_target_task_windows(config: Challenge1Config, releases: Iterable[int 
             release=release_tag,
             cache_dir=config.data_dir,
             mini=config.use_mini,
+        )
+        dataset = _filter_recordings(
+            dataset,
+            expected_n_chans=129,
+            min_n_times=min_target_recording_samples,
+            context=f"{config.target_task} {release_tag}",
         )
         raw = dataset.datasets[0].raw
         print(f"Loaded raw example for {config.target_task} from {release_tag}: {raw}")
@@ -174,6 +258,11 @@ def create_target_task_windows(config: Challenge1Config, releases: Iterable[int 
                 "response_type",
             ),
         )
+        windows = _filter_windows_with_valid_target(
+            windows,
+            target_name="target",
+            context=f"{config.target_task} {release_tag}",
+        )
         all_window_datasets.extend(windows.datasets)
 
     return BaseConcatDataset(all_window_datasets)
@@ -195,6 +284,12 @@ def create_passive_pretraining_datasets(config: Challenge1Config, *, valid_subje
                 cache_dir=config.data_dir,
                 mini=config.use_mini,
             )
+            dataset = _filter_recordings(
+                dataset,
+                expected_n_chans=129,
+                min_n_times=config.window_size_samples,
+                context=f"{task_name} {release_name(release)}",
+            )
             windows = create_fixed_length_windows(
                 dataset,
                 start_offset_samples=0,
@@ -211,6 +306,12 @@ def create_passive_pretraining_datasets(config: Challenge1Config, *, valid_subje
             release=release_name(config.valid_release),
             cache_dir=config.data_dir,
             mini=config.use_mini,
+        )
+        valid_dataset = _filter_recordings(
+            valid_dataset,
+            expected_n_chans=129,
+            min_n_times=config.window_size_samples,
+            context=f"{task_name} {release_name(config.valid_release)}",
         )
         valid_windows = create_fixed_length_windows(
             valid_dataset,
