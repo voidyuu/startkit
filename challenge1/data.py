@@ -176,8 +176,13 @@ def _filter_windows_with_valid_target(
     dropped_invalid_target = 0
 
     for window_dataset in windows.datasets:
-        target_value = window_dataset.description.get(target_name)
-        if not _is_finite_numeric(target_value):
+        metadata = getattr(window_dataset, "metadata", None)
+        if metadata is None or target_name not in metadata:
+            dropped_invalid_target += 1
+            continue
+        target_values = metadata[target_name]
+        has_valid_target = any(_is_finite_numeric(value) for value in target_values)
+        if not has_valid_target:
             dropped_invalid_target += 1
             continue
         filtered_datasets.append(window_dataset)

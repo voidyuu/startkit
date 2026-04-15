@@ -20,7 +20,7 @@ class TrainConfig:
 class Challenge1Config:
     data_dir: Path = Path("/mnt/E/zhuyu_data/eeg-challenges")
     artifacts_dir: Path = Path("artifacts/challenge1")
-    train_releases: tuple[int, ...] = (1, 2, 3)
+    train_releases: tuple[int, ...] = (1, 2, 3, 4, 6)
     valid_release: int = 5
     use_mini: bool = True
     sfreq: int = 100
