@@ -72,19 +72,12 @@ def save_training_curves(summary: dict, *, output_dir, prefix: str) -> None:
 def run_training(config: Challenge1Config | None = None, *, device: str | None = None) -> None:
     config = config or Challenge1Config()
     config.data_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = config.make_run_dir()
-    run_dir.mkdir(parents=True, exist_ok=False)
     device = device or get_default_device()
     print_device_banner(device)
-    print(f"Saving training artifacts to '{run_dir}'")
 
     train_windows = create_target_task_windows(config, config.train_releases)
     valid_release_windows = create_target_task_windows(config, [config.valid_release])
     valid_meta_information = valid_release_windows.get_metadata()
-    plot_target_distribution(
-        valid_meta_information,
-        output_path=run_dir / "response_time_distribution.png",
-    )
 
     valid_subjects, test_subjects = split_eval_subjects(
         valid_meta_information,
@@ -190,6 +183,15 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
         regression=True,
     )
     print(f"Final Test RMSE: {test_rmse:.6f}, Test Loss: {test_loss:.6f}")
+
+    run_dir = config.make_run_dir()
+    run_dir.mkdir(parents=True, exist_ok=False)
+    print(f"Saving training artifacts to '{run_dir}'")
+
+    plot_target_distribution(
+        valid_meta_information,
+        output_path=run_dir / "response_time_distribution.png",
+    )
 
     artifacts_weights_path = run_dir / "weights_challenge_1.pt"
     torch.save(model.state_dict(), artifacts_weights_path)
