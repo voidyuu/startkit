@@ -7,7 +7,7 @@
 # Thin training entrypoint. The actual implementation lives under `challenge1/`
 # so data, model, and training logic can evolve independently.
 
-from startkit_network import install_network_from_env
+from utils.custom_proxy import install_network_from_env
 
 
 if __name__ == "__main__":

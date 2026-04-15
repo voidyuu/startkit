@@ -67,7 +67,7 @@ import os
 import random
 from joblib import Parallel, delayed
 
-from startkit_network import install_network_from_env
+from utils.custom_proxy import install_network_from_env
 
 install_network_from_env()
 
