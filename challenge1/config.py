@@ -17,6 +17,14 @@ class TrainConfig:
 
 
 @dataclass(frozen=True)
+class StandardizationConfig:
+    enabled: bool
+    factor_new: float
+    init_block_s: float
+    eps: float
+
+
+@dataclass(frozen=True)
 class Challenge1Config:
     data_dir: Path = Path("/mnt/E/zhuyu_data/eeg-challenges")
     artifacts_dir: Path = Path("artifacts/challenge1")
@@ -53,6 +61,12 @@ class Challenge1Config:
         patience=5,
         min_delta=1e-4,
     )
+    standardization: StandardizationConfig = StandardizationConfig(
+        enabled=True,
+        factor_new=1e-3,
+        init_block_s=10.0,
+        eps=1e-4,
+    )
 
     @property
     def window_size_samples(self) -> int:
@@ -61,6 +75,10 @@ class Challenge1Config:
     @property
     def window_stride_samples(self) -> int:
         return self.sfreq
+
+    @property
+    def standardization_init_block_samples(self) -> int:
+        return max(1, int(self.standardization.init_block_s * self.sfreq))
 
     def make_run_dir(self, now: datetime | None = None) -> Path:
         timestamp = (now or datetime.now()).strftime("%Y_%m_%d#%H-%M-%S")

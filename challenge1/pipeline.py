@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 
 import torch
 from matplotlib import pyplot as plt
@@ -228,6 +229,7 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
         "train_releases": list(config.train_releases),
         "valid_release": config.valid_release,
         "use_mini": config.use_mini,
+        "standardization": asdict(config.standardization),
         "dataset_sizes": {
             "train": len(train_set),
             "valid": len(valid_set),

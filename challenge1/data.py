@@ -11,6 +11,7 @@ from braindecode.preprocessing import (
     Preprocessor,
     create_fixed_length_windows,
     create_windows_from_events,
+    exponential_moving_standardize,
     preprocess,
 )
 from eegdash.dataset import EEGChallengeDataset
@@ -201,6 +202,36 @@ def _filter_recordings(
     return BaseConcatDataset(filtered_datasets)
 
 
+def _standardize_recordings(
+    dataset: BaseConcatDataset,
+    *,
+    config: Challenge1Config,
+    context: str,
+) -> BaseConcatDataset:
+    if not config.standardization.enabled:
+        return dataset
+
+    print(
+        f"Applying exponential moving standardization to {context} "
+        f"(factor_new={config.standardization.factor_new}, "
+        f"init_block_samples={config.standardization_init_block_samples}, "
+        f"eps={config.standardization.eps})"
+    )
+    preprocess(
+        dataset,
+        [
+            Preprocessor(
+                exponential_moving_standardize,
+                factor_new=config.standardization.factor_new,
+                init_block_size=config.standardization_init_block_samples,
+                eps=config.standardization.eps,
+            ),
+        ],
+        n_jobs=1,
+    )
+    return dataset
+
+
 def _is_finite_numeric(value) -> bool:
     if value is None:
         return False
@@ -261,6 +292,11 @@ def create_target_task_windows(config: Challenge1Config, releases: Iterable[int 
             dataset,
             expected_n_chans=129,
             min_n_times=min_target_recording_samples,
+            context=f"{config.target_task} {release_tag}",
+        )
+        dataset = _standardize_recordings(
+            dataset,
+            config=config,
             context=f"{config.target_task} {release_tag}",
         )
         raw = dataset.datasets[0].raw
@@ -345,6 +381,11 @@ def create_passive_pretraining_datasets(
                 min_n_times=config.window_size_samples,
                 context=f"{task_name} {release_name(release)}",
             )
+            dataset = _standardize_recordings(
+                dataset,
+                config=config,
+                context=f"{task_name} {release_name(release)}",
+            )
             windows = create_fixed_length_windows(
                 dataset,
                 start_offset_samples=0,
@@ -376,6 +417,11 @@ def create_passive_pretraining_datasets(
             valid_dataset,
             expected_n_chans=129,
             min_n_times=config.window_size_samples,
+            context=f"{task_name} {valid_release_tag}",
+        )
+        valid_dataset = _standardize_recordings(
+            valid_dataset,
+            config=config,
             context=f"{task_name} {valid_release_tag}",
         )
         valid_windows = create_fixed_length_windows(
