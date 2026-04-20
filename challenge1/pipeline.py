@@ -11,7 +11,9 @@ from .data import (
     create_target_task_windows,
     make_loader,
     plot_target_distribution,
+    release_name,
     split_eval_subjects,
+    split_train_valid_test_subjects,
     split_window_dataset_by_subject,
 )
 from .models import EEGNeXTransferModel, build_regression_model_from_pretrained
@@ -75,25 +77,47 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
     device = device or get_default_device()
     print_device_banner(device)
 
-    train_windows = create_target_task_windows(config, config.train_releases)
-    valid_release_windows = create_target_task_windows(config, [config.valid_release])
-    valid_meta_information = valid_release_windows.get_metadata()
+    train_subjects: set[str] | None = None
+    normalized_train_releases = {release_name(release) for release in config.train_releases}
+    valid_release_tag = release_name(config.valid_release)
+    if normalized_train_releases == {valid_release_tag}:
+        print(
+            f"Train releases and validation release both resolve to {valid_release_tag}; "
+            "splitting one target-task dataset into train/valid/test subjects."
+        )
+        all_target_windows = create_target_task_windows(config, [config.valid_release])
+        valid_meta_information = all_target_windows.get_metadata()
+        train_subjects, valid_subjects, test_subjects = split_train_valid_test_subjects(
+            valid_meta_information,
+            random_seed=config.random_seed + 2,
+        )
+        train_set, valid_set, test_set = split_window_dataset_by_subject(
+            all_target_windows,
+            train_subjects,
+            valid_subjects,
+            test_subjects,
+        )
+    else:
+        train_set = create_target_task_windows(config, config.train_releases)
+        valid_release_windows = create_target_task_windows(config, [config.valid_release])
+        valid_meta_information = valid_release_windows.get_metadata()
 
-    valid_subjects, test_subjects = split_eval_subjects(
-        valid_meta_information,
-        random_seed=config.random_seed + 2,
-    )
-    _, valid_set, test_set = split_window_dataset_by_subject(
-        valid_release_windows,
-        set(),
-        valid_subjects,
-        test_subjects,
-    )
+        valid_subjects, test_subjects = split_eval_subjects(
+            valid_meta_information,
+            random_seed=config.random_seed + 2,
+        )
+        _, valid_set, test_set = split_window_dataset_by_subject(
+            valid_release_windows,
+            set(),
+            valid_subjects,
+            test_subjects,
+        )
+    if train_set is None or len(train_set) == 0:
+        raise RuntimeError("Training split is empty after subject partitioning.")
     if valid_set is None or len(valid_set) == 0:
         raise RuntimeError("Validation split is empty after subject partitioning.")
     if test_set is None or len(test_set) == 0:
         raise RuntimeError("Test split is empty after subject partitioning.")
-    train_set = train_windows
 
     print("Number of examples in each split")
     print(f"Train:\t{len(train_set)}")
@@ -103,6 +127,7 @@ def run_training(config: Challenge1Config | None = None, *, device: str | None =
     pretrain_train_set, pretrain_valid_set = create_passive_pretraining_datasets(
         config,
         valid_subjects=valid_subjects,
+        train_subjects=train_subjects,
     )
     pretrain_train_loader = make_loader(
         pretrain_train_set,
