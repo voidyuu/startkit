@@ -2,18 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from braindecode.datasets import BaseConcatDataset
 import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .config import Challenge1Config
-from .data import (
-    create_passive_pretraining_datasets,
-    create_target_task_windows,
-    make_loader,
-    release_name,
-    split_eval_subjects,
-    split_train_valid_test_subjects,
+from .data import create_passive_pretraining_datasets, make_loader, release_name
+from .data.preprocessing import fit_standardization, standardize_recordings
+from .data.splits import (
+    get_dataset_subjects,
+    split_eval_subjects_from_subjects,
+    split_recording_dataset_by_subject,
+    split_train_valid_test_subjects_from_subjects,
     split_window_dataset_by_subject,
+)
+from .data.windowing import (
+    create_target_task_windows_from_recordings,
+    load_target_task_recordings,
 )
 
 
@@ -69,25 +74,96 @@ def prepare_target_task_data(config: Challenge1Config) -> TargetTaskData:
             f"Train releases and validation release both resolve to {valid_release_tag}; "
             "splitting one target-task dataset into train/valid/test subjects."
         )
-        all_target_windows = create_target_task_windows(config, [config.valid_release])
-        valid_meta_information = all_target_windows.get_metadata()
-        train_subjects, valid_subjects, test_subjects = split_train_valid_test_subjects(
-            valid_meta_information,
+        all_target_recordings = load_target_task_recordings(config, [config.valid_release])
+        train_subjects, valid_subjects, test_subjects = split_train_valid_test_subjects_from_subjects(
+            get_dataset_subjects(all_target_recordings),
             random_seed=config.random_seed + 2,
         )
-        train_set, valid_set, test_set = split_window_dataset_by_subject(
-            all_target_windows,
+        train_recordings, valid_recordings, test_recordings = split_recording_dataset_by_subject(
+            all_target_recordings,
             train_subjects,
             valid_subjects,
             test_subjects,
         )
+        if train_recordings is None or valid_recordings is None or test_recordings is None:
+            raise RuntimeError("Target-task same-release split produced an empty recording partition.")
+
+        standardization_state = fit_standardization(
+            train_recordings,
+            config=config,
+            context=f"{config.target_task} train recordings",
+        )
+        train_recordings = standardize_recordings(
+            train_recordings,
+            config=config,
+            context=f"{config.target_task} train recordings",
+            global_zscore_stats=standardization_state,
+        )
+        valid_recordings = standardize_recordings(
+            valid_recordings,
+            config=config,
+            context=f"{config.target_task} valid recordings",
+            global_zscore_stats=standardization_state,
+        )
+        test_recordings = standardize_recordings(
+            test_recordings,
+            config=config,
+            context=f"{config.target_task} test recordings",
+            global_zscore_stats=standardization_state,
+        )
+
+        train_set = create_target_task_windows_from_recordings(
+            config,
+            train_recordings,
+            context=f"{config.target_task} train recordings",
+        )
+        valid_set = create_target_task_windows_from_recordings(
+            config,
+            valid_recordings,
+            context=f"{config.target_task} valid recordings",
+        )
+        test_set = create_target_task_windows_from_recordings(
+            config,
+            test_recordings,
+            context=f"{config.target_task} test recordings",
+        )
+        valid_meta_information = BaseConcatDataset(
+            train_set.datasets + valid_set.datasets + test_set.datasets
+        ).get_metadata()
     else:
-        train_set = create_target_task_windows(config, config.train_releases)
-        valid_release_windows = create_target_task_windows(config, [config.valid_release])
-        valid_meta_information = valid_release_windows.get_metadata()
-        valid_subjects, test_subjects = split_eval_subjects(
-            valid_meta_information,
+        train_recordings = load_target_task_recordings(config, config.train_releases)
+        standardization_state = fit_standardization(
+            train_recordings,
+            config=config,
+            context=f"{config.target_task} train recordings",
+        )
+        train_recordings = standardize_recordings(
+            train_recordings,
+            config=config,
+            context=f"{config.target_task} train recordings",
+            global_zscore_stats=standardization_state,
+        )
+        train_set = create_target_task_windows_from_recordings(
+            config,
+            train_recordings,
+            context=f"{config.target_task} train recordings",
+        )
+
+        valid_release_recordings = load_target_task_recordings(config, [config.valid_release])
+        valid_subjects, test_subjects = split_eval_subjects_from_subjects(
+            get_dataset_subjects(valid_release_recordings),
             random_seed=config.random_seed + 2,
+        )
+        valid_release_recordings = standardize_recordings(
+            valid_release_recordings,
+            config=config,
+            context=f"{config.target_task} eval recordings",
+            global_zscore_stats=standardization_state,
+        )
+        valid_release_windows = create_target_task_windows_from_recordings(
+            config,
+            valid_release_recordings,
+            context=f"{config.target_task} eval recordings",
         )
         _, valid_set, test_set = split_window_dataset_by_subject(
             valid_release_windows,
@@ -95,6 +171,11 @@ def prepare_target_task_data(config: Challenge1Config) -> TargetTaskData:
             valid_subjects,
             test_subjects,
         )
+        if valid_set is None or test_set is None:
+            raise RuntimeError("Evaluation split is empty after subject partitioning.")
+        valid_meta_information = BaseConcatDataset(
+            valid_set.datasets + test_set.datasets
+        ).get_metadata()
 
     if train_set is None or len(train_set) == 0:
         raise RuntimeError("Training split is empty after subject partitioning.")

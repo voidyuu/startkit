@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from braindecode.datasets import BaseConcatDataset
 from sklearn.model_selection import train_test_split
 from sklearn.utils import check_random_state
@@ -23,29 +25,40 @@ def release_name(release: int | str) -> str:
 
 
 def split_window_dataset_by_subject(windows, train_subjects, valid_subjects, test_subjects):
-    subject_split = windows.split("subject")
-    train_set, valid_set, test_set = [], [], []
+    return _split_dataset_by_subject(windows, train_subjects, valid_subjects, test_subjects)
 
-    for subject in subject_split:
-        if subject in train_subjects:
-            train_set.append(subject_split[subject])
-        elif subject in valid_subjects:
-            valid_set.append(subject_split[subject])
-        elif subject in test_subjects:
-            test_set.append(subject_split[subject])
 
-    def concat_or_none(datasets):
-        return BaseConcatDataset(datasets) if datasets else None
+def split_recording_dataset_by_subject(recordings, train_subjects, valid_subjects, test_subjects):
+    return _split_dataset_by_subject(recordings, train_subjects, valid_subjects, test_subjects)
 
-    return (
-        concat_or_none(train_set),
-        concat_or_none(valid_set),
-        concat_or_none(test_set),
-    )
+
+def get_dataset_subjects(dataset) -> list[str]:
+    subjects = []
+
+    for recording in dataset.datasets:
+        description = getattr(recording, "description", None)
+        if description is None or "subject" not in description:
+            raise RuntimeError("Dataset recording is missing 'subject' in its description.")
+        subjects.append(str(description["subject"]))
+
+    return subjects
 
 
 def split_eval_subjects(meta_information, *, random_seed: int, valid_frac: float = 0.5):
-    subjects = _get_eval_subjects(meta_information)
+    return split_eval_subjects_from_subjects(
+        meta_information["subject"].unique(),
+        random_seed=random_seed,
+        valid_frac=valid_frac,
+    )
+
+
+def split_eval_subjects_from_subjects(
+    subjects: Iterable[str],
+    *,
+    random_seed: int,
+    valid_frac: float = 0.5,
+):
+    subjects = _get_eval_subjects_from_subjects(subjects)
 
     valid_subjects, test_subjects = train_test_split(
         subjects,
@@ -63,7 +76,22 @@ def split_train_valid_test_subjects(
     train_frac: float = 0.8,
     valid_frac: float = 0.1,
 ):
-    subjects = _get_eval_subjects(meta_information)
+    return split_train_valid_test_subjects_from_subjects(
+        meta_information["subject"].unique(),
+        random_seed=random_seed,
+        train_frac=train_frac,
+        valid_frac=valid_frac,
+    )
+
+
+def split_train_valid_test_subjects_from_subjects(
+    subjects: Iterable[str],
+    *,
+    random_seed: int,
+    train_frac: float = 0.8,
+    valid_frac: float = 0.1,
+):
+    subjects = _get_eval_subjects_from_subjects(subjects)
     if len(subjects) < 3:
         raise RuntimeError("Need at least 3 subjects to split one release into train/valid/test sets.")
     if train_frac <= 0 or valid_frac <= 0 or train_frac + valid_frac >= 1:
@@ -96,6 +124,32 @@ def split_train_valid_test_subjects(
     return train_subjects, valid_subjects, test_subjects
 
 
+def _split_dataset_by_subject(dataset, train_subjects, valid_subjects, test_subjects):
+    subject_split = dataset.split("subject")
+    train_set, valid_set, test_set = [], [], []
+
+    for subject in subject_split:
+        if subject in train_subjects:
+            train_set.append(subject_split[subject])
+        elif subject in valid_subjects:
+            valid_set.append(subject_split[subject])
+        elif subject in test_subjects:
+            test_set.append(subject_split[subject])
+
+    def concat_or_none(datasets):
+        return BaseConcatDataset(datasets) if datasets else None
+
+    return (
+        concat_or_none(train_set),
+        concat_or_none(valid_set),
+        concat_or_none(test_set),
+    )
+
+
 def _get_eval_subjects(meta_information) -> list[str]:
-    subjects = meta_information["subject"].unique()
-    return [subject for subject in subjects if subject not in REMOVED_EVAL_SUBJECTS]
+    return _get_eval_subjects_from_subjects(meta_information["subject"].unique())
+
+
+def _get_eval_subjects_from_subjects(subjects: Iterable[str]) -> list[str]:
+    unique_subjects = list(dict.fromkeys(str(subject) for subject in subjects))
+    return [subject for subject in unique_subjects if subject not in REMOVED_EVAL_SUBJECTS]

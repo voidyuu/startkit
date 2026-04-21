@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+SUPPORTED_STANDARDIZATION_MODES = (
+    "exponential_moving",
+    "global_zscore",
+)
+
 
 @dataclass(frozen=True)
 class TrainConfig:
@@ -19,9 +24,17 @@ class TrainConfig:
 @dataclass(frozen=True)
 class StandardizationConfig:
     enabled: bool
+    mode: str
     factor_new: float
     init_block_s: float
     eps: float
+
+    def __post_init__(self) -> None:
+        if self.mode not in SUPPORTED_STANDARDIZATION_MODES:
+            raise ValueError(
+                f"Unsupported standardization mode {self.mode!r}. "
+                f"Expected one of {SUPPORTED_STANDARDIZATION_MODES}."
+            )
 
 
 @dataclass(frozen=True)
@@ -63,6 +76,7 @@ class Challenge1Config:
     )
     standardization: StandardizationConfig = StandardizationConfig(
         enabled=True,
+        mode="exponential_moving",
         factor_new=1e-3,
         init_block_s=10.0,
         eps=1e-4,
